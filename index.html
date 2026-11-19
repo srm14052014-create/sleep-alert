@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Driver Sleep Alert</title>
+  <title>Driver Sleep Alert (Face Lock)</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; text-align: center; padding: 12px; transition: background 0.15s; }
@@ -32,11 +32,11 @@
   </div>
 
   <div id="status">Tap "1. Start" to Open Camera</div>
-  <div id="eyeInfo">Eyes: Waiting...</div>
+  <div id="eyeInfo">Face Lock: Ready</div>
 
   <div class="slider-box">
-    <label id="sensLabel">Sensitivity Trigger: 88%</label>
-    <input type="range" id="sensSlider" min="65" max="98" value="88" />
+    <label id="sensLabel">Sensitivity Trigger: 97%</label>
+    <input type="range" id="sensSlider" min="80" max="99" value="97" />
   </div>
 
   <video id="cam" autoplay playsinline muted></video>
@@ -60,6 +60,7 @@
     let writer = null, closedMs = 0, lastTime = 0, lastCmd = "", audioCtx = null, lastBeep = 0;
     let openBaseline = null;
     let currentScore = 0;
+    let lockX = 80, lockY = 50; // Smoothed face center coordinates
 
     sensSlider.addEventListener("input", () => {
       sensLabel.textContent = `Sensitivity Trigger: ${sensSlider.value}%`;
@@ -123,7 +124,7 @@
     calBtn.addEventListener("click", () => {
       openBaseline = currentScore;
       closedMs = 0;
-      statusEl.textContent = "Calibrated! Monitoring Active";
+      statusEl.textContent = "Face Locked & Calibrated!";
     });
 
     startBtn.addEventListener("click", async () => {
@@ -148,10 +149,41 @@
       }
     });
 
-    function measureEyelidSharpness() {
+    // Finds face skin-tone center and tracks eye band locked onto your face
+    function trackFaceAndMeasureEyes() {
       ctx.drawImage(video, 0, 0, 160, 120);
-      const w = 100, h = 40;
-      const img = ctx.getImageData(30, 35, w, h).data;
+      const full = ctx.getImageData(0, 0, 160, 120).data;
+
+      let sumX = 0, sumY = 0, skinCount = 0;
+      for (let y = 10; y < 110; y += 2) {
+        for (let x = 20; x < 140; x += 2) {
+          const idx = (y * 160 + x) * 4;
+          const r = full[idx], g = full[idx + 1], b = full[idx + 2];
+          // Skin tone filter (works across light to deep skin tones)
+          if (r > 60 && g > 35 && b > 20 && r > g && r > b && Math.abs(r - g) > 10) {
+            sumX += x;
+            sumY += y;
+            skinCount++;
+          }
+        }
+      }
+
+      const faceFound = skinCount > 120;
+      if (faceFound) {
+        const targetX = sumX / skinCount;
+        // Eyes sit slightly above the vertical centroid of the face
+        const targetY = (sumY / skinCount) - 8;
+        // Smoothly follow head movement without jitter
+        lockX = lockX * 0.75 + targetX * 0.25;
+        lockY = lockY * 0.75 + targetY * 0.25;
+      }
+
+      // Clamp eye window inside 160x120 frame
+      const w = 76, h = 28;
+      const startX = Math.max(2, Math.min(160 - w - 2, Math.round(lockX - w / 2)));
+      const startY = Math.max(2, Math.min(120 - h - 2, Math.round(lockY - h / 2)));
+
+      const img = ctx.getImageData(startX, startY, w, h).data;
       let edgeSum = 0;
 
       for (let y = 1; y < h - 1; y++) {
@@ -163,7 +195,8 @@
           edgeSum += Math.abs(lumAbove - lumBelow);
         }
       }
-      return edgeSum / (w * h);
+
+      return { score: edgeSum / (w * h), faceFound };
     }
 
     function loop(now) {
@@ -171,7 +204,19 @@
         const dt = now - lastTime;
         lastTime = now;
 
-        currentScore = measureEyelidSharpness();
+        const { score, faceFound } = trackFaceAndMeasureEyes();
+        currentScore = score;
+
+        if (!faceFound) {
+          closedMs = 0;
+          eyeInfoEl.textContent = "Face Lock: Searching for face...";
+          statusEl.textContent = "Align Face in Camera";
+          statusEl.classList.remove("alert");
+          document.body.classList.remove("alarm-bg");
+          sendArduino("0");
+          requestAnimationFrame(loop);
+          return;
+        }
 
         if (openBaseline === null && currentScore > 1) {
           openBaseline = currentScore;
@@ -189,8 +234,8 @@
 
         const sec = (closedMs / 1000).toFixed(1);
         eyeInfoEl.textContent = isClosed
-          ? `CLOSED (${sec}s / 3.0s) • Level: ${ratio.toFixed(0)}%`
-          : `OPEN • Level: ${ratio.toFixed(0)}% (Trigger < ${threshold}%)`;
+          ? `Face Locked • CLOSED (${sec}s / 3.0s) • ${ratio.toFixed(0)}%`
+          : `Face Locked • OPEN • Level: ${ratio.toFixed(0)}% (< ${threshold}%)`;
 
         if (closedMs >= ALARM_SECONDS * 1000) {
           statusEl.textContent = writer ? "WAKE UP! (ARDUINO + PHONE)" : "WAKE UP! EYES CLOSED 3s!";
@@ -199,7 +244,7 @@
           playAlarm();
           sendArduino("1");
         } else {
-          statusEl.textContent = writer ? "Monitoring (Arduino Linked)" : "Monitoring (Phone Active)";
+          statusEl.textContent = writer ? "Face Locked • Arduino Linked" : "Face Locked • Monitoring";
           statusEl.classList.remove("alert");
           document.body.classList.remove("alarm-bg");
           sendArduino("0");
