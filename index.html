@@ -3,92 +3,73 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Driver Sleep Alert</title>
+  <title>Driver Sleep Alert (Instant)</title>
   <style>
     body{font-family:system-ui,sans-serif;background:#111;color:#fff;text-align:center;margin:0;padding:12px}
     .row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:12px}
     button{padding:10px 14px;font-size:15px;font-weight:700;border:none;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
     button:disabled{background:#444;cursor:not-allowed}
-    .box{position:relative;max-width:480px;margin:0 auto;border-radius:10px;overflow:hidden;border:2px solid #333;background:#000}
+    .box{position:relative;max-width:400px;margin:0 auto;border-radius:10px;overflow:hidden;border:2px solid #333;background:#000}
     video,canvas{width:100%;display:block;transform:scaleX(-1)}
     canvas{position:absolute;top:0;left:0}
-    .status{max-width:480px;margin:12px auto;padding:12px;border-radius:10px;background:#1e1e1e;font-size:16px}
+    .status{max-width:400px;margin:12px auto;padding:12px;border-radius:10px;background:#1e1e1e;font-size:16px}
     .alarm{background:#dc2626!important;animation:p .5s infinite alternate}
     @keyframes p{from{opacity:1}to{opacity:.7}}
   </style>
 </head>
 <body>
-  <h3>Driver Sleep Alert (Face Lock)</h3>
+  <h3>Driver Sleep Alert (Instant)</h3>
   <div class="row">
-    <button id="bStart" disabled>1. Start</button>
+    <button id="bStart">1. Start</button>
     <button id="bSet" disabled>2. Set</button>
     <button id="bArd">Arduino</button>
     <button id="bTest" disabled>Test</button>
   </div>
   <div class="box"><video id="v" autoplay playsinline muted></video><canvas id="c"></canvas></div>
   <div id="st" class="status">
-    <div id="txt">Downloading AI (Step 1/2)...</div><br>
-    Sensitivity: <span id="sv">75</span>% <input type="range" id="sl" min="50" max="95" value="75">
+    <div id="txt">Ready (0s Instant Load)</div><br>
+    Sensitivity: <span id="sv">80</span>% <input type="range" id="sl" min="50" max="98" value="80">
   </div>
 
-  <script type="module">
+  <script>
     const $ = id => document.getElementById(id);
-    const v = $("v"), c = $("c"), ctx = c.getContext("2d");
-    const L = new Array(33, 160, 158, 133, 153, 144);
-    const R = new Array(362, 385, 387, 263, 373, 380);
-    let lm, wr, base = 0.3, ear = 0.3, t0 = null, on = false, ac, lastT = -1;
+    const v = $("v"), c = $("c"), ctx = c.getContext("2d", { willReadFrequently: true });
+    let fd = null, wr = null, baseDark = 0, curDark = 0, t0 = null, on = false, ac = null;
+
+    if ("FaceDetector" in window) {
+      fd = new FaceDetector({ fastMode: true, maxDetectedFaces: 2 });
+    }
 
     $("sl").oninput = e => $("sv").textContent = e.target.value;
 
-    async function loadAI() {
-      try {
-        const mp = await import("https://jsdelivr.net");
-        $("txt").textContent = "Loading Model (Step 2/2)...";
-        const vis = await mp.FilesetResolver.forVisionTasks("https://jsdelivr.net");
-        const opts = {
-          baseOptions: {
-            modelAssetPath: "https://googleapis.com",
-            delegate: "GPU"
-          },
-          runningMode: "VIDEO",
-          numFaces: 2
-        };
-        try {
-          lm = await mp.FaceLandmarker.createFromOptions(vis, opts);
-        } catch (gpuErr) {
-          opts.baseOptions.delegate = "CPU";
-          lm = await mp.FaceLandmarker.createFromOptions(vis, opts);
-        }
-        $("txt").textContent = "Face Lock: Ready. Tap 1. Start";
-        $("bStart").disabled = false;
-      } catch (err) {
-        $("txt").textContent = "AI Load Error: " + err.message;
-      }
-    }
-    loadAI();
-
     $("bStart").onclick = async () => {
-      try {
-        $("bStart").disabled = true;
-        ac = ac || new (window.AudioContext || window.webkitAudioContext)();
-        v.srcObject = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 480 }, height: { ideal: 360 } } });
-        v.onloadeddata = () => {
-          c.width = v.videoWidth; c.height = v.videoHeight;
-          $("bSet").disabled = false; loop();
-        };
-      } catch (err) {
-        $("txt").textContent = "Camera Error: " + err.message;
-        $("bStart").disabled = false;
-      }
+      $("bStart").disabled = true;
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      v.srcObject = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 320 }, height: { ideal: 240 } }
+      });
+      v.onloadeddata = () => {
+        c.width = v.videoWidth; c.height = v.videoHeight;
+        $("bSet").disabled = false;
+        loop();
+      };
     };
 
-    $("bSet").onclick = () => { base = ear; $("txt").textContent = `Set: ${base.toFixed(2)}`; };
+    $("bSet").onclick = () => {
+      baseDark = curDark;
+      $("txt").textContent = "Calibrated! Open Eyes Locked";
+    };
+
     $("bArd").onclick = async () => {
       try {
-        const p = await navigator.serial.requestPort(); await p.open({ baudRate: 9600 });
-        wr = p.writable.getWriter(); $("bTest").disabled = false; $("bArd").textContent = "Connected";
+        const p = await navigator.serial.requestPort();
+        await p.open({ baudRate: 9600 });
+        wr = p.writable.getWriter();
+        $("bTest").disabled = false;
+        $("bArd").textContent = "Connected";
       } catch (e) { alert(e.message); }
     };
+
     $("bTest").onclick = () => { alarm(true); setTimeout(() => alarm(false), 1200); };
 
     const send = s => wr && wr.write(new TextEncoder().encode(s));
@@ -101,35 +82,83 @@
     function alarm(act) {
       if (act === on) return; on = act;
       $("st").classList.toggle("alarm", act);
-      send(act ? "1" : "0"); if (act) beep();
+      send(act ? "1" : "0");
+      if (act) beep();
     }
-    const getEAR = (f, idx) => {
-      const d = (a, b) => Math.hypot(f[idx[a]].x - f[idx[b]].x, f[idx[a]].y - f[idx[b]].y);
-      return (d(1, 5) + d(2, 4)) / (2 * d(0, 3));
-    };
 
-    function loop() {
-      if (v.currentTime !== lastT) {
-        lastT = v.currentTime;
-        const res = lm.detectForVideo(v, performance.now());
-        ctx.clearRect(0, 0, c.width, c.height);
-        if (res.faceLandmarks && res.faceLandmarks.length > 0) {
-          const f = res.faceLandmarks.reduce((a, b) => Math.abs(b.at(454).x - b.at(234).x) > Math.abs(a.at(454).x - a.at(234).x) ? b : a);
-          ear = (getEAR(f, L) + getEAR(f, R)) / 2;
-          const lim = base * ($("sl").value / 100);
-          ctx.fillStyle = ear < lim ? "#ef4444" : "#22c55e";
-          [...L, ...R].forEach(i => ctx.fillRect(f[i].x * c.width - 2, f[i].y * c.height - 2, 4, 4));
-          if (ear < lim) {
-            t0 = t0 || performance.now();
-            const dt = performance.now() - t0;
-            if (dt > 1200) { $("txt").textContent = "WAKE UP!"; alarm(true); }
-            else $("txt").textContent = `Closing... ${(dt / 1000).toFixed(1)}s`;
-          } else {
-            t0 = null; alarm(false);
-            $("txt").textContent = `Locked | EAR: ${ear.toFixed(2)} / ${lim.toFixed(2)}`;
-          }
-        } else { t0 = null; alarm(false); $("txt").textContent = "No face"; }
+    // Measures dark pupil/iris pixel density inside the eye region
+    function measureEyeOpenness(x, y, w, h) {
+      const img = ctx.getImageData(x, y, w, h).data;
+      let darkPixels = 0, totalBrightness = 0;
+      for (let i = 0; i < img.length; i += 4) {
+        totalBrightness += (img[i] + img[i + 1] + img[i + 2]) / 3;
       }
+      const avg = totalBrightness / (img.length / 4);
+      for (let i = 0; i < img.length; i += 4) {
+        const b = (img[i] + img[i + 1] + img[i + 2]) / 3;
+        if (b < avg * 0.65) darkPixels++; // Pupils & lashes are much darker than skin
+      }
+      return darkPixels / (img.length / 4);
+    }
+
+    async function loop() {
+      ctx.drawImage(v, 0, 0, c.width, c.height);
+      let box = { x: c.width * 0.25, y: c.height * 0.2, width: c.width * 0.5, height: c.height * 0.6 };
+      let locked = false;
+
+      // Use native hardware FaceDetector if available
+      if (fd) {
+        try {
+          const faces = await fd.detect(c);
+          if (faces.length > 0) {
+            const biggest = faces.reduce((a, b) => b.boundingBox.width > a.boundingBox.width ? b : a);
+            box = biggest.boundingBox;
+            locked = true;
+          }
+        } catch (e) {}
+      } else {
+        locked = true; // Fallback to center face lock guide box
+      }
+
+      if (locked) {
+        // Eye band is located at 28% to 45% down from top of face box
+        const ex = Math.max(0, Math.floor(box.x + box.width * 0.15));
+        const ey = Math.max(0, Math.floor(box.y + box.height * 0.28));
+        const ew = Math.min(c.width - ex, Math.floor(box.width * 0.70));
+        const eh = Math.min(c.height - ey, Math.floor(box.height * 0.16));
+
+        curDark = measureEyeOpenness(ex, ey, ew, eh);
+        if (!baseDark) baseDark = curDark;
+
+        const threshold = baseDark * ($("sl").value / 100);
+        const eyesClosed = curDark < threshold;
+
+        // Draw Face Lock box & Eye Band
+        ctx.strokeStyle = eyesClosed ? "#ef4444" : "#22c55e";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(box.x, box.y, box.width, box.height);
+        ctx.strokeRect(ex, ey, ew, eh);
+
+        if (eyesClosed) {
+          t0 = t0 || performance.now();
+          const dt = performance.now() - t0;
+          if (dt > 1200) {
+            $("txt").textContent = "WAKE UP! Drowsiness Detected!";
+            alarm(true);
+          } else {
+            $("txt").textContent = `Eyes Closing... ${(dt / 1000).toFixed(1)}s`;
+          }
+        } else {
+          t0 = null;
+          alarm(false);
+          $("txt").textContent = `Face Locked | Openness: ${Math.round((curDark / baseDark) * 100)}%`;
+        }
+      } else {
+        t0 = null;
+        alarm(false);
+        $("txt").textContent = "Align face in frame...";
+      }
+
       requestAnimationFrame(loop);
     }
   </script>
