@@ -1,254 +1,113 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Driver Sleep Alert (Face Lock)</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Driver Sleep Alert</title>
+  <link rel="preconnect" href="https://jsdelivr.net" crossorigin>
+  <link rel="preconnect" href="https://googleapis.com" crossorigin>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; text-align: center; padding: 12px; transition: background 0.15s; }
-    body.alarm-bg { background: #991b1b; }
-    .row { display: flex; gap: 8px; margin-bottom: 10px; }
-    button { flex: 1; padding: 14px 6px; font-size: 14px; font-weight: 700; border: none; border-radius: 10px; background: #2563eb; color: #fff; }
-    button:disabled { background: #334155; color: #94a3b8; }
-    #calBtn { background: #d97706; }
-    #usbBtn { background: #0d9488; }
-    #testBtn { background: #475569; max-width: 70px; }
-    #status { padding: 12px; border-radius: 10px; background: #1e293b; font-size: 17px; font-weight: 800; margin-bottom: 8px; color: #4ade80; }
-    #eyeInfo { font-size: 14px; font-weight: 700; margin-bottom: 8px; color: #cbd5e1; }
-    .slider-box { background: #1e293b; padding: 10px; border-radius: 10px; margin-bottom: 10px; }
-    .slider-box label { display: block; font-size: 13px; margin-bottom: 6px; color: #94a3b8; }
-    input[type="range"] { width: 100%; accent-color: #3b82f6; }
-    .alert { background: #dc2626 !important; color: #fff !important; }
-    video { width: 100%; max-width: 320px; border-radius: 12px; transform: scaleX(-1); background: #000; display: block; margin: 0 auto; }
+    body{font-family:system-ui,sans-serif;background:#111;color:#fff;text-align:center;margin:0;padding:12px}
+    .row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:12px}
+    button{padding:10px 14px;font-size:15px;font-weight:700;border:none;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
+    button:disabled{background:#444;cursor:not-allowed}
+    .box{position:relative;max-width:480px;margin:0 auto;border-radius:10px;overflow:hidden;border:2px solid #333;background:#000}
+    video,canvas{width:100%;display:block;transform:scaleX(-1)}
+    canvas{position:absolute;top:0;left:0}
+    .status{max-width:480px;margin:12px auto;padding:12px;border-radius:10px;background:#1e1e1e;font-size:16px}
+    .alarm{background:#dc2626!important;animation:p .5s infinite alternate}
+    @keyframes p{from{opacity:1}to{opacity:.7}}
   </style>
 </head>
 <body>
+  <h3>Driver Sleep Alert (Face Lock)</h3>
   <div class="row">
-    <button id="startBtn" type="button">1. Start</button>
-    <button id="calBtn" type="button" disabled>2. Set Open</button>
-    <button id="usbBtn" type="button">Arduino</button>
-    <button id="testBtn" type="button">Test</button>
+    <button id="bStart">1. Start</button>
+    <button id="bSet" disabled>2. Set</button>
+    <button id="bArd">Arduino</button>
+    <button id="bTest" disabled>Test</button>
+  </div>
+  <div class="box"><video id="v" autoplay playsinline muted></video><canvas id="c"></canvas></div>
+  <div id="st" class="status">
+    <div id="txt">Loading AI...</div><br>
+    Sensitivity: <span id="sv">75</span>% <input type="range" id="sl" min="50" max="95" value="75">
   </div>
 
-  <div id="status">Tap "1. Start" to Open Camera</div>
-  <div id="eyeInfo">Face Lock: Ready</div>
+  <script type="module">
+    import { FaceLandmarker, FilesetResolver } from "https://jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+    const $ = id => document.getElementById(id);
+    const v = $("v"), c = $("c"), ctx = c.getContext("2d");
+    const L =, R =;
+    let lm, wr, base = 0.3, ear = 0.3, t0 = null, on = false, ac, lastT = -1;
 
-  <div class="slider-box">
-    <label id="sensLabel">Sensitivity Trigger: 97%</label>
-    <input type="range" id="sensSlider" min="80" max="99" value="97" />
-  </div>
+    $("sl").oninput = e => $("sv").textContent = e.target.value;
 
-  <video id="cam" autoplay playsinline muted></video>
-  <canvas id="proc" width="160" height="120" style="display:none;"></canvas>
+    const ready = (async () => {
+      const vis = await FilesetResolver.forVisionTasks("https://jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+      lm = await FaceLandmarker.createFromOptions(vis, {
+        baseOptions: { modelAssetPath: "https://googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task", delegate: "GPU" },
+        runningMode: "VIDEO", numFaces: 2, outputFaceBlendshapes: false, outputFacialTransformationMatrixes: false
+      });
+      if (!v.srcObject) $("txt").textContent = "Face Lock: Ready";
+    })();
 
-  <script>
-    const statusEl = document.getElementById("status");
-    const eyeInfoEl = document.getElementById("eyeInfo");
-    const sensSlider = document.getElementById("sensSlider");
-    const sensLabel = document.getElementById("sensLabel");
-    const video = document.getElementById("cam");
-    const canvas = document.getElementById("proc");
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    $("bStart").onclick = async () => {
+      $("bStart").disabled = true;
+      ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+      v.srcObject = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 480 }, height: { ideal: 360 } } });
+      v.onloadeddata = async () => {
+        c.width = v.videoWidth; c.height = v.videoHeight;
+        await ready; $("bSet").disabled = false; loop();
+      };
+    };
 
-    const startBtn = document.getElementById("startBtn");
-    const calBtn = document.getElementById("calBtn");
-    const usbBtn = document.getElementById("usbBtn");
-    const testBtn = document.getElementById("testBtn");
-
-    const ALARM_SECONDS = 3.0;
-    let writer = null, closedMs = 0, lastTime = 0, lastCmd = "", audioCtx = null, lastBeep = 0;
-    let openBaseline = null;
-    let currentScore = 0;
-    let lockX = 80, lockY = 50; // Smoothed face center coordinates
-
-    sensSlider.addEventListener("input", () => {
-      sensLabel.textContent = `Sensitivity Trigger: ${sensSlider.value}%`;
-    });
-
-    function playAlarm() {
-      const now = performance.now();
-      if (now - lastBeep < 260) return;
-      lastBeep = now;
-
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === "suspended") audioCtx.resume();
-
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.type = "sawtooth";
-      osc.frequency.setValueAtTime(980, audioCtx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(1450, audioCtx.currentTime + 0.16);
-      gain.gain.setValueAtTime(1.0, audioCtx.currentTime);
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.start();
-      osc.stop(audioCtx.currentTime + 0.18);
-
-      if ("vibrate" in navigator) navigator.vibrate(200);
-    }
-
-    function sendArduino(cmd) {
-      if (writer && cmd !== lastCmd) {
-        lastCmd = cmd;
-        writer.write(new TextEncoder().encode(cmd)).catch(() => {
-          writer = null;
-          usbBtn.textContent = "Arduino";
-          usbBtn.disabled = false;
-        });
-      }
-    }
-
-    testBtn.addEventListener("click", () => {
-      playAlarm();
-      sendArduino("1");
-      setTimeout(() => sendArduino("0"), 500);
-    });
-
-    usbBtn.addEventListener("click", async () => {
+    $("bSet").onclick = () => { base = ear; $("txt").textContent = `Set: ${base.toFixed(2)}`; };
+    $("bArd").onclick = async () => {
       try {
-        if (!("serial" in navigator)) {
-          statusEl.textContent = "Use Chrome with USB OTG for Arduino";
-          return;
-        }
-        const port = await navigator.serial.requestPort();
-        await port.open({ baudRate: 9600 });
-        writer = port.writable.getWriter();
-        usbBtn.textContent = "Linked";
-        usbBtn.disabled = true;
-      } catch (e) {
-        statusEl.textContent = "Phone Speaker Mode Active";
-      }
-    });
+        const p = await navigator.serial.requestPort(); await p.open({ baudRate: 9600 });
+        wr = p.writable.getWriter(); $("bTest").disabled = false; $("bArd").textContent = "Connected";
+      } catch (e) { alert(e.message); }
+    };
+    $("bTest").onclick = () => { alarm(true); setTimeout(() => alarm(false), 1200); };
 
-    calBtn.addEventListener("click", () => {
-      openBaseline = currentScore;
-      closedMs = 0;
-      statusEl.textContent = "Face Locked & Calibrated!";
-    });
+    const send = s => wr && wr.write(new TextEncoder().encode(s));
+    function beep() {
+      if (!on || !ac) return;
+      const o = ac.createOscillator(); o.type = "square"; o.frequency.value = 880;
+      o.connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.2);
+      setTimeout(beep, 400);
+    }
+    function alarm(act) {
+      if (act === on) return; on = act;
+      $("st").classList.toggle("alarm", act);
+      send(act ? "1" : "0"); if (act) beep();
+    }
+    const getEAR = (f, idx) => {
+      const d = (a, b) => Math.hypot(f[idx[a]].x - f[idx[b]].x, f[idx[a]].y - f[idx[b]].y);
+      return (d(1, 5) + d(2, 4)) / (2 * d(0, 3));
+    };
 
-    startBtn.addEventListener("click", async () => {
-      startBtn.disabled = true;
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === "suspended") await audioCtx.resume();
-      if ("wakeLock" in navigator) navigator.wakeLock.request("screen").catch(() => {});
-
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user", width: { ideal: 320 }, height: { ideal: 240 } },
-          audio: false
-        });
-        video.srcObject = stream;
-        await video.play();
-        calBtn.disabled = false;
-        lastTime = performance.now();
-        requestAnimationFrame(loop);
-      } catch (err) {
-        statusEl.textContent = "Camera Error: " + err.message;
-        startBtn.disabled = false;
-      }
-    });
-
-    // Finds face skin-tone center and tracks eye band locked onto your face
-    function trackFaceAndMeasureEyes() {
-      ctx.drawImage(video, 0, 0, 160, 120);
-      const full = ctx.getImageData(0, 0, 160, 120).data;
-
-      let sumX = 0, sumY = 0, skinCount = 0;
-      for (let y = 10; y < 110; y += 2) {
-        for (let x = 20; x < 140; x += 2) {
-          const idx = (y * 160 + x) * 4;
-          const r = full[idx], g = full[idx + 1], b = full[idx + 2];
-          // Skin tone filter (works across light to deep skin tones)
-          if (r > 60 && g > 35 && b > 20 && r > g && r > b && Math.abs(r - g) > 10) {
-            sumX += x;
-            sumY += y;
-            skinCount++;
+    function loop() {
+      if (v.currentTime !== lastT) {
+        lastT = v.currentTime;
+        const res = lm.detectForVideo(v, performance.now());
+        ctx.clearRect(0, 0, c.width, c.height);
+        if (res.faceLandmarks?.length) {
+          const f = res.faceLandmarks.reduce((a, b) => Math.abs(b[454].x - b[234].x) > Math.abs(a[454].x - a[234].x) ? b : a);
+          ear = (getEAR(f, L) + getEAR(f, R)) / 2;
+          const lim = base * ($("sl").value / 100);
+          ctx.fillStyle = ear < lim ? "#ef4444" : "#22c55e";
+          [...L, ...R].forEach(i => ctx.fillRect(f[i].x * c.width - 2, f[i].y * c.height - 2, 4, 4));
+          if (ear < lim) {
+            t0 = t0 || performance.now();
+            const dt = performance.now() - t0;
+            if (dt > 1200) { $("txt").textContent = "WAKE UP!"; alarm(true); }
+            else $("txt").textContent = `Closing... ${(dt / 1000).toFixed(1)}s`;
+          } else {
+            t0 = null; alarm(false);
+            $("txt").textContent = `Locked | EAR: ${ear.toFixed(2)} / ${lim.toFixed(2)}`;
           }
-        }
-      }
-
-      const faceFound = skinCount > 120;
-      if (faceFound) {
-        const targetX = sumX / skinCount;
-        // Eyes sit slightly above the vertical centroid of the face
-        const targetY = (sumY / skinCount) - 8;
-        // Smoothly follow head movement without jitter
-        lockX = lockX * 0.75 + targetX * 0.25;
-        lockY = lockY * 0.75 + targetY * 0.25;
-      }
-
-      // Clamp eye window inside 160x120 frame
-      const w = 76, h = 28;
-      const startX = Math.max(2, Math.min(160 - w - 2, Math.round(lockX - w / 2)));
-      const startY = Math.max(2, Math.min(120 - h - 2, Math.round(lockY - h / 2)));
-
-      const img = ctx.getImageData(startX, startY, w, h).data;
-      let edgeSum = 0;
-
-      for (let y = 1; y < h - 1; y++) {
-        for (let x = 0; x < w; x++) {
-          const idxAbove = ((y - 1) * w + x) * 4;
-          const idxBelow = ((y + 1) * w + x) * 4;
-          const lumAbove = 0.3 * img[idxAbove] + 0.59 * img[idxAbove + 1] + 0.11 * img[idxAbove + 2];
-          const lumBelow = 0.3 * img[idxBelow] + 0.59 * img[idxBelow + 1] + 0.11 * img[idxBelow + 2];
-          edgeSum += Math.abs(lumAbove - lumBelow);
-        }
-      }
-
-      return { score: edgeSum / (w * h), faceFound };
-    }
-
-    function loop(now) {
-      if (now - lastTime >= 100) {
-        const dt = now - lastTime;
-        lastTime = now;
-
-        const { score, faceFound } = trackFaceAndMeasureEyes();
-        currentScore = score;
-
-        if (!faceFound) {
-          closedMs = 0;
-          eyeInfoEl.textContent = "Face Lock: Searching for face...";
-          statusEl.textContent = "Align Face in Camera";
-          statusEl.classList.remove("alert");
-          document.body.classList.remove("alarm-bg");
-          sendArduino("0");
-          requestAnimationFrame(loop);
-          return;
-        }
-
-        if (openBaseline === null && currentScore > 1) {
-          openBaseline = currentScore;
-        }
-
-        const ratio = openBaseline ? (currentScore / openBaseline) * 100 : 100;
-        const threshold = Number(sensSlider.value);
-        const isClosed = ratio < threshold;
-
-        if (isClosed) {
-          closedMs += dt;
-        } else {
-          closedMs = 0;
-        }
-
-        const sec = (closedMs / 1000).toFixed(1);
-        eyeInfoEl.textContent = isClosed
-          ? `Face Locked • CLOSED (${sec}s / 3.0s) • ${ratio.toFixed(0)}%`
-          : `Face Locked • OPEN • Level: ${ratio.toFixed(0)}% (< ${threshold}%)`;
-
-        if (closedMs >= ALARM_SECONDS * 1000) {
-          statusEl.textContent = writer ? "WAKE UP! (ARDUINO + PHONE)" : "WAKE UP! EYES CLOSED 3s!";
-          statusEl.classList.add("alert");
-          document.body.classList.add("alarm-bg");
-          playAlarm();
-          sendArduino("1");
-        } else {
-          statusEl.textContent = writer ? "Face Locked • Arduino Linked" : "Face Locked • Monitoring";
-          statusEl.classList.remove("alert");
-          document.body.classList.remove("alarm-bg");
-          sendArduino("0");
-        }
+        } else { t0 = null; alarm(false); $("txt").textContent = "No face"; }
       }
       requestAnimationFrame(loop);
     }
