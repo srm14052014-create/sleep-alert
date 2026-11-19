@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Driver Sleep Alert</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #0f172a; color: #f8fafc; text-align: center; padding: 16px; transition: background 0.15s; }
+    body.alarm-bg { background: #991b1b; }
+    .row { display: flex; gap: 8px; margin-bottom: 12px; }
+    button { flex: 1; padding: 14px 8px; font-size: 15px; font-weight: 700; border: none; border-radius: 10px; background: #2563eb; color: #fff; }
+    button:disabled { background: #334155; color: #94a3b8; }
+    #usbBtn { background: #0d9488; }
+    #testBtn { background: #475569; max-width: 80px; }
+    #status { padding: 14px; border-radius: 10px; background: #1e293b; font-size: 18px; font-weight: 800; margin-bottom: 8px; color: #4ade80; }
+    #eyeInfo { font-size: 15px; font-weight: 600; margin-bottom: 12px; color: #cbd5e1; }
+    .alert { background: #dc2626 !important; color: #fff !important; }
+    video { width: 100%; max-width: 340px; border-radius: 12px; transform: scaleX(-1); background: #000; }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <button id="startBtn">Start Monitor</button>
+    <button id="usbBtn">Connect Arduino</button>
+    <button id="testBtn">Test</button>
+  </div>
+  <div id="status">Tap Start to Begin</div>
+  <div id="eyeInfo">Eyes: Waiting...</div>
+  <video id="cam" autoplay playsinline muted></video>
+
+  <script type="module">
+    import { FaceLandmarker, FilesetResolver } from "https://jsdelivr.net";
+
+    const statusEl = document.getElementById("status");
+    const eyeInfoEl = document.getElementById("eyeInfo");
+    const video = document.getElementById("cam");
+    const startBtn = document.getElementById("startBtn");
+    const usbBtn = document.getElementById("usbBtn");
+    const testBtn = document.getElementById("testBtn");
+
+    const ALARM_SECONDS = 3.0; // 3-second eye closure timer
+    let writer = null, detector = null, closedMs = 0, lastTime = 0, lastCmd = "", audioCtx = null, lastBeep = 0;
+
+    function playAlarm() {
+      const now = performance.now();
+      if (now - lastBeep < 280) return;
+      lastBeep = now;
+
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(950, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(1400, audioCtx.currentTime + 0.18);
+      gain.gain.setValueAtTime(1.0, audioCtx.currentTime);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.2);
+
+      if ("vibrate" in navigator) navigator.vibrate(200);
+    }
+
+    function sendArduino(cmd) {
+      if (writer && cmd !== lastCmd) {
+        lastCmd = cmd;
+        writer.write(new TextEncoder().encode(cmd)).catch(() => {
+          writer = null;
+          usbBtn.textContent = "Connect Arduino";
+          usbBtn.disabled = false;
+        });
+      }
+    }
+
+    usbBtn.onclick = async () => {
+      try {
+        const serialAPI = "serial" in navigator
+          ? navigator.serial
+          : (await import("https://jsdelivr.net")).serial;
+        const port = await serialAPI.requestPort();
+        await port.open({ baudRate: 9600 });
+        writer = port.writable.getWriter();
+        usbBtn.textContent = "Arduino Linked";
+        usbBtn.disabled = true;
+      } catch (e) {
+        statusEl.textContent = "Phone Speaker Mode Active";
+      }
+    };
+
+    testBtn.onclick = () => {
+      playAlarm();
+      sendArduino("1");
+      setTimeout(() => sendArduino("0"), 500);
+    };
+
+    startBtn.onclick = async () => {
+      startBtn.disabled = true;
+      statusEl.textContent = "Starting Camera...";
+
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") await audioCtx.resume();
+      if ("wakeLock" in navigator) navigator.wakeLock.request("screen").catch(() => {});
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: { ideal: 320 }, height: { ideal: 240 } },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+
+        statusEl.textContent = "Loading Google MediaPipe...";
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://jsdelivr.net"
+        );
+        detector = await FaceLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: "https://googleapis.com",
+            delegate: "CPU"
+          },
+          outputFaceBlendshapes: true,
+          runningMode: "VIDEO",
+          numFaces: 1
+        });
+
+        lastTime = performance.now();
+        requestAnimationFrame(loop);
+      } catch (err) {
+        statusEl.textContent = "Error: " + err.message;
+        startBtn.disabled = false;
+      }
+    };
+
+    function loop(now) {
+      if (now - lastTime >= 100) {
+        const dt = now - lastTime;
+        lastTime = now;
+
+        const res = detector.detectForVideo(video, now);
+        const blendshapes = res.faceBlendshapes;
+
+        if (blendshapes && blendshapes.length > 0) {
+          const categories = blendshapes.categories;
+          const leftScore = categories.find(c => c.categoryName === "eyeBlinkLeft")?.score || 0;
+          const rightScore = categories.find(c => c.categoryName === "eyeBlinkRight")?.score || 0;
+
+          // Score > 0.50 means eye is closed
+          const isClosed = leftScore > 0.50 && rightScore > 0.50;
+          closedMs = isClosed ? closedMs + dt : 0;
+          const closedSec = (closedMs / 1000).toFixed(1);
+
+          eyeInfoEl.textContent = isClosed
+            ? `Eyes: CLOSED (${closedSec}s / ${ALARM_SECONDS.toFixed(1)}s)`
+            : `Eyes: OPEN (L: ${(1 - leftScore).toFixed(2)} | R: ${(1 - rightScore).toFixed(2)})`;
+
+          if (closedMs >= ALARM_SECONDS * 1000) {
+            statusEl.textContent = writer ? "WAKE UP! (ARDUINO + PHONE)" : "WAKE UP! DROWSY ALERT!";
+            statusEl.classList.add("alert");
+            document.body.classList.add("alarm-bg");
+            playAlarm();
+            sendArduino("1");
+          } else {
+            statusEl.textContent = writer ? "Monitoring (Arduino Active)" : "Monitoring (Phone Active)";
+            statusEl.classList.remove("alert");
+            document.body.classList.remove("alarm-bg");
+            sendArduino("0");
+          }
+        } else {
+          eyeInfoEl.textContent = "Eyes: Face Not Detected";
+          statusEl.textContent = "Align Face in Camera";
+        }
+      }
+      requestAnimationFrame(loop);
+    }
+  </script>
+</body>
+</html>
