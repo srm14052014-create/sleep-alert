@@ -3,38 +3,59 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Driver Sleep Alert (Instant)</title>
+  <title>Driver Sleep Alert - Competition Edition</title>
   <style>
-    body{font-family:system-ui,sans-serif;background:#111;color:#fff;text-align:center;margin:0;padding:12px}
+    :root{--bg:#0b0f19;--card:#151c2c;--accent:#3b82f6;--ok:#10b981;--bad:#ef4444}
+    body{font-family:system-ui,sans-serif;background:var(--bg);color:#f8fafc;text-align:center;margin:0;padding:14px}
+    h2{margin:4px 0 12px;font-size:20px;letter-spacing:.5px}
     .row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:12px}
-    button{padding:10px 14px;font-size:15px;font-weight:700;border:none;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
-    button:disabled{background:#444;cursor:not-allowed}
-    .box{position:relative;max-width:400px;margin:0 auto;border-radius:10px;overflow:hidden;border:2px solid #333;background:#000}
+    button{padding:10px 14px;font-size:14px;font-weight:700;border:none;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer}
+    button:disabled{background:#334155;color:#94a3b8;cursor:not-allowed}
+    #bArd.connected{background:var(--ok)}
+    .box{position:relative;max-width:440px;margin:0 auto;border-radius:12px;overflow:hidden;border:3px solid #1e293b;background:#000}
     video,canvas{width:100%;display:block;transform:scaleX(-1)}
     canvas{position:absolute;top:0;left:0}
-    .status{max-width:400px;margin:12px auto;padding:12px;border-radius:10px;background:#1e1e1e;font-size:16px}
-    .alarm{background:#dc2626!important;animation:p .5s infinite alternate}
-    @keyframes p{from{opacity:1}to{opacity:.7}}
+    .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:440px;margin:12px auto}
+    .m-card{background:var(--card);padding:10px;border-radius:10px;border:1px solid #1e293b}
+    .m-val{font-size:20px;font-weight:800;color:#38bdf8}
+    .m-lbl{font-size:11px;color:#94a3b8;text-transform:uppercase;margin-top:2px}
+    .status{max-width:440px;margin:0 auto;padding:14px;border-radius:12px;background:var(--card);border:1px solid #1e293b;font-size:16px;font-weight:700}
+    .alarm{background:var(--bad)!important;animation:p .4s infinite alternate}
+    @keyframes p{from{opacity:1}to{opacity:.75}}
+    .slider-row{margin-top:10px;font-size:13px;color:#cbd5e1;font-weight:400}
   </style>
 </head>
 <body>
-  <h3>Driver Sleep Alert (Instant)</h3>
+  <h2>DRIVER SLEEP ALERT SYSTEM</h2>
   <div class="row">
-    <button id="bStart">1. Start</button>
-    <button id="bSet" disabled>2. Set</button>
-    <button id="bArd">Arduino</button>
-    <button id="bTest" disabled>Test</button>
+    <button id="bStart">1. Start Camera</button>
+    <button id="bSet" disabled>2. Calibrate Eyes</button>
+    <button id="bArd">3. Pair Nano</button>
+    <button id="bTest" disabled>Test Hardware</button>
   </div>
-  <div class="box"><video id="v" autoplay playsinline muted></video><canvas id="c"></canvas></div>
+
+  <div class="box">
+    <video id="v" autoplay playsinline muted></video>
+    <canvas id="c"></canvas>
+  </div>
+
+  <div class="metrics">
+    <div class="m-card"><div class="m-val" id="mOpen">--%</div><div class="m-lbl">Eye Openness</div></div>
+    <div class="m-card"><div class="m-val" id="mAlerts">0</div><div class="m-lbl">Alerts Triggered</div></div>
+    <div class="m-card"><div class="m-val" id="mHw" style="color:#94a3b8">OFFLINE</div><div class="m-lbl">Arduino Nano</div></div>
+  </div>
+
   <div id="st" class="status">
-    <div id="txt">Ready (0s Instant Load)</div><br>
-    Sensitivity: <span id="sv">80</span>% <input type="range" id="sl" min="50" max="98" value="80">
+    <div id="txt">Tap "1. Start Camera" to initialize</div>
+    <div class="slider-row">
+      Sensitivity: <b id="sv">80</b>% <input type="range" id="sl" min="55" max="95" value="80">
+    </div>
   </div>
 
   <script>
     const $ = id => document.getElementById(id);
     const v = $("v"), c = $("c"), ctx = c.getContext("2d", { willReadFrequently: true });
-    let fd = null, wr = null, baseDark = 0, curDark = 0, t0 = null, on = false, ac = null;
+    let fd = null, wr = null, baseDark = 0, curDark = 0, t0 = null, on = false, ac = null, alerts = 0;
 
     if ("FaceDetector" in window) {
       fd = new FaceDetector({ fastMode: true, maxDetectedFaces: 2 });
@@ -57,7 +78,7 @@
 
     $("bSet").onclick = () => {
       baseDark = curDark;
-      $("txt").textContent = "Calibrated! Open Eyes Locked";
+      $("txt").textContent = "Baseline Locked! Driver Ready";
     };
 
     $("bArd").onclick = async () => {
@@ -66,27 +87,42 @@
         await p.open({ baudRate: 9600 });
         wr = p.writable.getWriter();
         $("bTest").disabled = false;
-        $("bArd").textContent = "Connected";
-      } catch (e) { alert(e.message); }
+        $("bArd").textContent = "Nano Paired";
+        $("bArd").classList.add("connected");
+        $("mHw").textContent = "READY";
+        $("mHw").style.color = "#10b981";
+        send("0"); // Ensure Green LED turns ON
+      } catch (e) { alert("Serial Error: " + e.message); }
     };
 
-    $("bTest").onclick = () => { alarm(true); setTimeout(() => alarm(false), 1200); };
+    $("bTest").onclick = () => {
+      alarm(true, true);
+      setTimeout(() => alarm(false, true), 1200);
+    };
 
     const send = s => wr && wr.write(new TextEncoder().encode(s));
+
     function beep() {
       if (!on || !ac) return;
-      const o = ac.createOscillator(); o.type = "square"; o.frequency.value = 880;
-      o.connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.2);
-      setTimeout(beep, 400);
-    }
-    function alarm(act) {
-      if (act === on) return; on = act;
-      $("st").classList.toggle("alarm", act);
-      send(act ? "1" : "0");
-      if (act) beep();
+      const o = ac.createOscillator(); o.type = "square"; o.frequency.value = 920;
+      o.connect(ac.destination); o.start(); o.stop(ac.currentTime + 0.15);
+      setTimeout(beep, 300);
     }
 
-    // Measures dark pupil/iris pixel density inside the eye region
+    function alarm(act, isTest = false) {
+      if (act === on) return;
+      on = act;
+      $("st").classList.toggle("alarm", act);
+      send(act ? "1" : "0");
+      if (act) {
+        if (!isTest) {
+          alerts++;
+          $("mAlerts").textContent = alerts;
+        }
+        beep();
+      }
+    }
+
     function measureEyeOpenness(x, y, w, h) {
       const img = ctx.getImageData(x, y, w, h).data;
       let darkPixels = 0, totalBrightness = 0;
@@ -96,7 +132,7 @@
       const avg = totalBrightness / (img.length / 4);
       for (let i = 0; i < img.length; i += 4) {
         const b = (img[i] + img[i + 1] + img[i + 2]) / 3;
-        if (b < avg * 0.65) darkPixels++; // Pupils & lashes are much darker than skin
+        if (b < avg * 0.65) darkPixels++;
       }
       return darkPixels / (img.length / 4);
     }
@@ -106,22 +142,19 @@
       let box = { x: c.width * 0.25, y: c.height * 0.2, width: c.width * 0.5, height: c.height * 0.6 };
       let locked = false;
 
-      // Use native hardware FaceDetector if available
       if (fd) {
         try {
           const faces = await fd.detect(c);
           if (faces.length > 0) {
-            const biggest = faces.reduce((a, b) => b.boundingBox.width > a.boundingBox.width ? b : a);
-            box = biggest.boundingBox;
+            box = faces.reduce((a, b) => b.boundingBox.width > a.boundingBox.width ? b : a).boundingBox;
             locked = true;
           }
         } catch (e) {}
       } else {
-        locked = true; // Fallback to center face lock guide box
+        locked = true;
       }
 
       if (locked) {
-        // Eye band is located at 28% to 45% down from top of face box
         const ex = Math.max(0, Math.floor(box.x + box.width * 0.15));
         const ey = Math.max(0, Math.floor(box.y + box.height * 0.28));
         const ew = Math.min(c.width - ex, Math.floor(box.width * 0.70));
@@ -130,11 +163,13 @@
         curDark = measureEyeOpenness(ex, ey, ew, eh);
         if (!baseDark) baseDark = curDark;
 
+        const openPct = Math.min(100, Math.round((curDark / baseDark) * 100));
+        $("mOpen").textContent = openPct + "%";
+
         const threshold = baseDark * ($("sl").value / 100);
         const eyesClosed = curDark < threshold;
 
-        // Draw Face Lock box & Eye Band
-        ctx.strokeStyle = eyesClosed ? "#ef4444" : "#22c55e";
+        ctx.strokeStyle = eyesClosed ? "#ef4444" : "#10b981";
         ctx.lineWidth = 2;
         ctx.strokeRect(box.x, box.y, box.width, box.height);
         ctx.strokeRect(ex, ey, ew, eh);
@@ -142,8 +177,8 @@
         if (eyesClosed) {
           t0 = t0 || performance.now();
           const dt = performance.now() - t0;
-          if (dt > 1200) {
-            $("txt").textContent = "WAKE UP! Drowsiness Detected!";
+          if (dt > 1000) { // 1.0s fast demo trigger
+            $("txt").textContent = "ALERT: DRIVER DROWSINESS DETECTED!";
             alarm(true);
           } else {
             $("txt").textContent = `Eyes Closing... ${(dt / 1000).toFixed(1)}s`;
@@ -151,12 +186,13 @@
         } else {
           t0 = null;
           alarm(false);
-          $("txt").textContent = `Face Locked | Openness: ${Math.round((curDark / baseDark) * 100)}%`;
+          $("txt").textContent = "STATUS: SAFE (DRIVER AWAKE)";
         }
       } else {
         t0 = null;
         alarm(false);
-        $("txt").textContent = "Align face in frame...";
+        $("mOpen").textContent = "--%";
+        $("txt").textContent = "Searching for driver face...";
       }
 
       requestAnimationFrame(loop);
