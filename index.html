@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Driver Sleep Alert - Competition Edition</title>
+  <title>Driver Sleep Alert - Pro Precision</title>
   <style>
     :root{--bg:#0b0f19;--card:#151c2c;--accent:#3b82f6;--ok:#10b981;--bad:#ef4444}
     body{font-family:system-ui,sans-serif;background:var(--bg);color:#f8fafc;text-align:center;margin:0;padding:14px}
@@ -29,7 +29,7 @@
   <h2>DRIVER SLEEP ALERT SYSTEM</h2>
   <div class="row">
     <button id="bStart">1. Start Camera</button>
-    <button id="bSet" disabled>2. Calibrate Eyes</button>
+    <button id="bSet" disabled>2. Calibrate (1s)</button>
     <button id="bArd">3. Pair Nano</button>
     <button id="bTest" disabled>Test Hardware</button>
   </div>
@@ -48,14 +48,15 @@
   <div id="st" class="status">
     <div id="txt">Tap "1. Start Camera" to initialize</div>
     <div class="slider-row">
-      Sensitivity: <b id="sv">80</b>% <input type="range" id="sl" min="55" max="95" value="80">
+      Trigger Threshold: <b id="sv">72</b>% <input type="range" id="sl" min="45" max="90" value="72">
     </div>
   </div>
 
   <script>
     const $ = id => document.getElementById(id);
     const v = $("v"), c = $("c"), ctx = c.getContext("2d", { willReadFrequently: true });
-    let fd = null, wr = null, baseDark = 0, curDark = 0, t0 = null, on = false, ac = null, alerts = 0;
+    let fd = null, wr = null, baseScore = 0, smoothScore = 0, t0 = null, on = false, ac = null, alerts = 0;
+    let calSamples = [], isCalibrating = false;
 
     if ("FaceDetector" in window) {
       fd = new FaceDetector({ fastMode: true, maxDetectedFaces: 2 });
@@ -67,18 +68,21 @@
       $("bStart").disabled = true;
       ac = ac || new (window.AudioContext || window.webkitAudioContext)();
       v.srcObject = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "user", width: { ideal: 320 }, height: { ideal: 240 } }
+        video: { facingMode: "user", width: { ideal: 480 }, height: { ideal: 360 } }
       });
       v.onloadeddata = () => {
         c.width = v.videoWidth; c.height = v.videoHeight;
         $("bSet").disabled = false;
+        isCalibrating = true; // Auto-calibrate during first second
+        calSamples = [];
         loop();
       };
     };
 
     $("bSet").onclick = () => {
-      baseDark = curDark;
-      $("txt").textContent = "Baseline Locked! Driver Ready";
+      isCalibrating = true;
+      calSamples = [];
+      $("txt").textContent = "Hold eyes open... Calibrating (1s)";
     };
 
     $("bArd").onclick = async () => {
@@ -91,7 +95,7 @@
         $("bArd").classList.add("connected");
         $("mHw").textContent = "READY";
         $("mHw").style.color = "#10b981";
-        send("0"); // Ensure Green LED turns ON
+        send("0");
       } catch (e) { alert("Serial Error: " + e.message); }
     };
 
@@ -123,29 +127,44 @@
       }
     }
 
-    function measureEyeOpenness(x, y, w, h) {
+    // Measures vertical contrast gradient + dark pupil core inside a single eye box
+    function getEyeOpenScore(x, y, w, h) {
+      if (w < 8 || h < 6) return 0;
       const img = ctx.getImageData(x, y, w, h).data;
-      let darkPixels = 0, totalBrightness = 0;
-      for (let i = 0; i < img.length; i += 4) {
-        totalBrightness += (img[i] + img[i + 1] + img[i + 2]) / 3;
+      const rowAvg = new Float32Array(h);
+
+      // Compute average luminance per horizontal row
+      for (let r = 0; r < h; r++) {
+        let sum = 0;
+        for (let col = 0; col < w; col++) {
+          const idx = (r * w + col) * 4;
+          // Perceptual luminance formula
+          sum += 0.299 * img[idx] + 0.587 * img[idx + 1] + 0.114 * img[idx + 2];
+        }
+        rowAvg[r] = sum / w;
       }
-      const avg = totalBrightness / (img.length / 4);
-      for (let i = 0; i < img.length; i += 4) {
-        const b = (img[i] + img[i + 1] + img[i + 2]) / 3;
-        if (b < avg * 0.65) darkPixels++;
+
+      // Find brightest eyelid/brow row vs darkest pupil/iris row
+      let maxRow = 0, minRow = 255;
+      for (let r = 0; r < h; r++) {
+        if (rowAvg[r] > maxRow) maxRow = rowAvg[r];
+        if (rowAvg[r] < minRow) minRow = rowAvg[r];
       }
-      return darkPixels / (img.length / 4);
+
+      // Normalized vertical contrast: high when pupil + sclera are visible, low when eyelid is shut
+      return (maxRow - minRow) / (maxRow + 1);
     }
 
     async function loop() {
       ctx.drawImage(v, 0, 0, c.width, c.height);
-      let box = { x: c.width * 0.25, y: c.height * 0.2, width: c.width * 0.5, height: c.height * 0.6 };
+      let box = { x: c.width * 0.28, y: c.height * 0.18, width: c.width * 0.44, height: c.height * 0.64 };
       let locked = false;
 
       if (fd) {
         try {
           const faces = await fd.detect(c);
           if (faces.length > 0) {
+            // Lock onto largest (closest) face
             box = faces.reduce((a, b) => b.boundingBox.width > a.boundingBox.width ? b : a).boundingBox;
             locked = true;
           }
@@ -155,38 +174,63 @@
       }
 
       if (locked) {
-        const ex = Math.max(0, Math.floor(box.x + box.width * 0.15));
-        const ey = Math.max(0, Math.floor(box.y + box.height * 0.28));
-        const ew = Math.min(c.width - ex, Math.floor(box.width * 0.70));
-        const eh = Math.min(c.height - ey, Math.floor(box.height * 0.16));
+        // Isolate Left Eye & Right Eye boxes separately (skipping nose bridge)
+        const eyeY = Math.max(0, Math.floor(box.y + box.height * 0.27));
+        const eyeH = Math.min(c.height - eyeY, Math.floor(box.height * 0.17));
+        const eyeW = Math.floor(box.width * 0.26);
 
-        curDark = measureEyeOpenness(ex, ey, ew, eh);
-        if (!baseDark) baseDark = curDark;
+        const leftX = Math.max(0, Math.floor(box.x + box.width * 0.16));
+        const rightX = Math.max(0, Math.floor(box.x + box.width * 0.58));
 
-        const openPct = Math.min(100, Math.round((curDark / baseDark) * 100));
+        const leftScore = getEyeOpenScore(leftX, eyeY, eyeW, eyeH);
+        const rightScore = getEyeOpenScore(rightX, eyeY, eyeW, eyeH);
+        const rawScore = (leftScore + rightScore) / 2;
+
+        // Multi-frame 1-second calibration
+        if (isCalibrating) {
+          calSamples.push(rawScore);
+          if (calSamples.length >= 25) {
+            baseScore = calSamples.reduce((a, b) => a + b, 0) / calSamples.length;
+            smoothScore = baseScore;
+            isCalibrating = false;
+            $("txt").textContent = "Calibrated! Precision Lock Active";
+          } else {
+            $("txt").textContent = `Calibrating... ${Math.round((calSamples.length / 25) * 100)}%`;
+          }
+        }
+
+        // Exponential Moving Average (EMA) to eliminate single-frame flicker
+        smoothScore = smoothScore ? (smoothScore * 0.65 + rawScore * 0.35) : rawScore;
+        if (!baseScore) baseScore = smoothScore;
+
+        const openPct = Math.min(100, Math.max(0, Math.round((smoothScore / baseScore) * 100)));
         $("mOpen").textContent = openPct + "%";
 
-        const threshold = baseDark * ($("sl").value / 100);
-        const eyesClosed = curDark < threshold;
+        const threshold = Number($("sl").value);
+        const eyesClosed = !isCalibrating && (openPct < threshold);
 
+        // Draw Face Lock & Dual Eye Tracking Boxes
         ctx.strokeStyle = eyesClosed ? "#ef4444" : "#10b981";
         ctx.lineWidth = 2;
         ctx.strokeRect(box.x, box.y, box.width, box.height);
-        ctx.strokeRect(ex, ey, ew, eh);
+        ctx.strokeRect(leftX, eyeY, eyeW, eyeH);
+        ctx.strokeRect(rightX, eyeY, eyeW, eyeH);
 
-        if (eyesClosed) {
-          t0 = t0 || performance.now();
-          const dt = performance.now() - t0;
-          if (dt > 1000) { // 1.0s fast demo trigger
-            $("txt").textContent = "ALERT: DRIVER DROWSINESS DETECTED!";
-            alarm(true);
+        if (!isCalibrating) {
+          if (eyesClosed) {
+            t0 = t0 || performance.now();
+            const dt = performance.now() - t0;
+            if (dt > 1000) {
+              $("txt").textContent = "ALERT: DRIVER DROWSINESS DETECTED!";
+              alarm(true);
+            } else {
+              $("txt").textContent = `Eyes Closing... ${(dt / 1000).toFixed(1)}s`;
+            }
           } else {
-            $("txt").textContent = `Eyes Closing... ${(dt / 1000).toFixed(1)}s`;
+            t0 = null;
+            alarm(false);
+            $("txt").textContent = "STATUS: SAFE (DRIVER AWAKE)";
           }
-        } else {
-          t0 = null;
-          alarm(false);
-          $("txt").textContent = "STATUS: SAFE (DRIVER AWAKE)";
         }
       } else {
         t0 = null;
